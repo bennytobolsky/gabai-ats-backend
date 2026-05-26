@@ -1,26 +1,22 @@
 import os
 import json
+from flask import Flask, request, jsonify
 from openai import OpenAI
 
-def handler(event, context):
-    # תמיכה בבקשות מסוג POST בלבד
-    if event.get("httpMethod") != "POST":
-        return {
-            "statusCode": 405,
-            "body": json.dumps({"error": "Method Not Allowed"})
-        }
+# יצירת שרת האינטרנט
+app = Flask(__name__)
 
+# הגדרת נתיב הקבלה של השרת
+@app.route('/analyze', methods=['POST'])
+def analyze():
     try:
         # 1. קבלת הנתונים שנשלחו מהאוטומציה של Base44
-        body = json.loads(event.get("body", "{}"))
+        body = request.get_json() or {}
         cv_text = body.get("cv_text", "")
         job_context = body.get("job_context", {})
         
         if not cv_text:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "No CV text provided"})
-            }
+            return jsonify({"error": "No CV text provided"}), 400
 
         # 2. אתחול הלקוח של OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -71,17 +67,17 @@ def handler(event, context):
 
         # 5. חילוץ התשובה והחזרתה
         result_json = json.loads(response.choices[0].message.content)
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            "body": json.dumps(result_json, ensure_ascii=False)
-        }
+        return jsonify(result_json), 200
 
     except Exception as e:
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+        return jsonify({"error": str(e)}), 500
+
+# נתיב בדיקה כדי לוודא שהשרת באוויר
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify({"status": "Server is running perfectly!"}), 200
+
+if __name__ == '__main__':
+    # הפעלת השרת
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
