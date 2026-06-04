@@ -1,4 +1,4 @@
-openai>=1.0.0
-requests>=2.31.0
-Flask==3.0.0
-gunicorn==21.2.0
+{
+  "cv_base64": "[גרור לכאן את בועת cv_base64]",
+  "job_context": "[גרור לכאן את בועת job_requirements]"
+}
