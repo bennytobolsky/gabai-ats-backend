@@ -1,7 +1,7 @@
 import os
 import json
 import traceback
-import requests
+import base64
 import fitz  # PyMuPDF
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -38,27 +38,29 @@ def analyze():
         if not isinstance(body, dict):
             return jsonify({"error": "Invalid request body format."}), 400
 
-        cv_file_url = body.get("cv_file_url", "")
+        # קבלת ה-Base64 של קורות החיים
+        cv_base64 = body.get("cv_base64", "")
         job_context = body.get("job_context", "לא צוין") 
         
-        if not cv_file_url:
-            return jsonify({"error": "No CV file URL provided"}), 400
+        if not cv_base64:
+            return jsonify({"error": "No cv_base64 provided in the request"}), 400
 
-        # 2. הורדת הקובץ וחילוץ הטקסט (הפתרון השורשי לעברית)
+        # 2. פענוח ה-Base64 וחילוץ הטקסט (הפתרון השורשי)
         try:
-            pdf_response = requests.get(cv_file_url)
-            pdf_response.raise_for_status()
+            # המרת הטקסט חזרה לפורמט של קובץ (Bytes) בזיכרון השרת
+            pdf_bytes = base64.b64decode(cv_base64)
             
             cv_text = ""
-            with fitz.open(stream=pdf_response.content, filetype="pdf") as doc:
+            # PyMuPDF פותח את הקובץ ישירות מהזיכרון ללא שמירה בדיסק
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
                 for page in doc:
                     cv_text += page.get_text()
                     
             if not cv_text.strip():
-                return jsonify({"error": "Could not extract text from the provided PDF URL"}), 400
+                return jsonify({"error": "Could not extract text from the decoded PDF"}), 400
                 
         except Exception as pdf_error:
-            return jsonify({"error": f"Failed to download or read PDF: {str(pdf_error)}"}), 500
+            return jsonify({"error": f"Failed to decode Base64 or read PDF: {str(pdf_error)}"}), 500
 
         # 3. אתחול הלקוח של OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
