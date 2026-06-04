@@ -6,10 +6,8 @@ import fitz  # PyMuPDF
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
-# יצירת שרת האינטרנט
 app = Flask(__name__)
 
-# פונקציית עזר לניקוי וחילוץ JSON מתשובת ה-AI
 def extract_clean_json(text):
     try:
         start_idx = text.find('{')
@@ -21,48 +19,54 @@ def extract_clean_json(text):
     except:
         return None
 
-# הגדרת נתיב הקבלה של השרת
 @app.route('/analyze', methods=['POST'])
 def analyze():
     try:
-        # 1. קבלת הנתונים שנשלחו מהאוטומציה של Make
         body = request.get_json() or {}
-        
-        # הגנה למקרה שהנתונים נשלחו בפורמט לא צפוי
         if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except:
-                pass
+            try: body = json.loads(body)
+            except: pass
                 
         if not isinstance(body, dict):
             return jsonify({"error": "Invalid request body format."}), 400
 
-        # קבלת ה-Base64 של קורות החיים
         cv_base64 = body.get("cv_base64", "")
         job_context = body.get("job_context", "לא צוין") 
         
         if not cv_base64:
             return jsonify({"error": "No cv_base64 provided in the request"}), 400
 
-        # 2. פענוח ה-Base64 וחילוץ הטקסט (הפתרון השורשי)
         try:
-            # המרת הטקסט חזרה לפורמט של קובץ (Bytes) בזיכרון השרת
             pdf_bytes = base64.b64decode(cv_base64)
-            
-            cv_text = ""
-            # PyMuPDF פותח את הקובץ ישירות מהזיכרון ללא שמירה בדיסק
+        except Exception as e:
+            return jsonify({"error": f"Invalid base64 encoding: {str(e)}"}), 400
+
+        cv_text = ""
+        image_messages = []
+        
+        try:
             with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                # 1. ניסיון לחלץ טקסט רגיל
                 for page in doc:
                     cv_text += page.get_text()
-                    
-            if not cv_text.strip():
-                return jsonify({"error": "Could not extract text from the decoded PDF"}), 400
                 
+                # 2. נשק יום הדין (Vision): אם הטקסט ריק כמעט לגמרי, מצלמים את הקובץ
+                if len(cv_text.strip()) < 50:
+                    cv_text = "הטקסט לא חולץ כראוי בגלל קידוד הפונט, לכן מצורפות תמונות של המסמך לקריאה ויזואלית:"
+                    # ניקח מקסימום את 3 העמודים הראשונים כדי למקד את ה-AI
+                    for page in doc[:3]:
+                        pix = page.get_pixmap(dpi=150) # רזולוציה אופטימלית לקריאה
+                        img_base64 = base64.b64encode(pix.tobytes("jpeg")).decode("utf-8")
+                        image_messages.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_base64}"
+                            }
+                        })
         except Exception as pdf_error:
-            return jsonify({"error": f"Failed to decode Base64 or read PDF: {str(pdf_error)}"}), 500
+            return jsonify({"error": f"Failed to process PDF: {str(pdf_error)}"}), 500
 
-        # 3. אתחול הלקוח של OpenAI
+        # אתחול הלקוח של OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
         system_prompt = (
@@ -71,25 +75,24 @@ def analyze():
             "עליך להחזיר תמיד אך ורק פלט במבנה JSON תקין בשפה העברית, ללא שום טקסט נוסף לפני או אחרי ה-JSON."
         )
         
-        # המרת דרישות המשרה לטקסט רגיל כדי למנוע שגיאות
         job_context_text = json.dumps(job_context, ensure_ascii=False) if isinstance(job_context, dict) else str(job_context)
             
-        user_prompt = f"""
+        user_prompt_text = f"""
         דרישות המשרה:
         {job_context_text}
 
-        קורות החיים של המועמד (טקסט גולמי):
+        קורות החיים של המועמד:
         ---
         {cv_text}
         ---
 
-        עליך לנתח את קורות החיים המוצגים למעלה ולהחזיר JSON במבנה הבא בדיוק.
-        חשוב מאוד: עליך לחלץ את המידע האמיתי מתוך קורות החיים של המועמד (לדוגמה, תחת full_name רשום את השם האמיתי שמופיע בקובץ):
+        עליך לנתח את קורות החיים (קרא את הטקסט או את התמונות המצורפות של המסמך) ולהחזיר JSON במבנה הבא בדיוק.
+        חשוב מאוד: חלץ את המידע האמיתי מתוך המסמך.
         {{
-          "full_name": "השם המלא האמיתי של המועמד מתוך קורות החיים",
-          "phone": "מספר הטלפון האמיתי של המועמד מתוך קורות החיים",
-          "email": "כתובת האימייל האמיתית של המועמד מתוך קורות החיים",
-          "id_number": "מספר תעודת הזהות של המועמד (חפש כל צירוף אפשרי כמו מספר זהות או ת.ז). אם לא רשום במסמך, החזר null",
+          "full_name": "השם המלא האמיתי של המועמד",
+          "phone": "מספר הטלפון האמיתי של המועמד",
+          "email": "כתובת האימייל האמיתית של המועמד",
+          "id_number": "מספר תעודת הזהות של המועמד. אם לא רשום במסמך, החזר null",
           "match_score": מספר בלבד בין 0 ל-100 על סמך מידת ההתאמה לדרישות,
           "ai_feedback": "3-5 משפטים בעברית המסכמים את ההתרשמות הכללית בצורה ישירה ועניינית",
           "ai_strengths": "נקודות חוזקה מרכזיות של המועמד שמתאימות במדויק לדרישות",
@@ -98,18 +101,22 @@ def analyze():
         }}
         """
 
-        # 4. פנייה ל-API
+        # בניית חבילת הנתונים ל-AI (טקסט + תמונות אם יש)
+        content_array = [{"type": "text", "text": user_prompt_text}]
+        if image_messages:
+            content_array.extend(image_messages)
+
+        # פנייה ל-API
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": content_array}
             ],
             response_format={"type": "json_object"},
             temperature=0.2
         )
 
-        # 5. חילוץ וניקוי
         raw_content = response.choices[0].message.content
         result_json = extract_clean_json(raw_content)
         
@@ -119,14 +126,12 @@ def analyze():
         return jsonify(result_json), 200
 
     except Exception as e:
-        # במקרה של שגיאה חדשה, נדפיס בדיוק באיזו שורה היא קרתה
         error_details = traceback.format_exc()
         return jsonify({"error": str(e), "details": error_details}), 500
 
-# נתיב בדיקה כדי לוודא שהשרת באוויר
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({"status": "Server is running perfectly!"}), 200
+    return jsonify({"status": "Server is running with OCR Vision fallback!"}), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
