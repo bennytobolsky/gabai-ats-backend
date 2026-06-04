@@ -1,6 +1,8 @@
 import os
 import json
 import traceback
+import requests
+import fitz  # PyMuPDF
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
@@ -36,14 +38,29 @@ def analyze():
         if not isinstance(body, dict):
             return jsonify({"error": "Invalid request body format."}), 400
 
-        cv_text = body.get("cv_text", "")
-        # אנחנו פשוט לוקחים את כל הבלוק כטקסט
+        cv_file_url = body.get("cv_file_url", "")
         job_context = body.get("job_context", "לא צוין") 
         
-        if not cv_text:
-            return jsonify({"error": "No CV text provided"}), 400
+        if not cv_file_url:
+            return jsonify({"error": "No CV file URL provided"}), 400
 
-        # 2. אתחול הלקוח של OpenAI
+        # 2. הורדת הקובץ וחילוץ הטקסט (הפתרון השורשי לעברית)
+        try:
+            pdf_response = requests.get(cv_file_url)
+            pdf_response.raise_for_status()
+            
+            cv_text = ""
+            with fitz.open(stream=pdf_response.content, filetype="pdf") as doc:
+                for page in doc:
+                    cv_text += page.get_text()
+                    
+            if not cv_text.strip():
+                return jsonify({"error": "Could not extract text from the provided PDF URL"}), 400
+                
+        except Exception as pdf_error:
+            return jsonify({"error": f"Failed to download or read PDF: {str(pdf_error)}"}), 500
+
+        # 3. אתחול הלקוח של OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
         system_prompt = (
